@@ -130,6 +130,8 @@ subprojects { p ->
         if (subprojectType.isMod) {
             shadowDep project(':core')
             shadowDep project(':terraplusplus')
+            shadowDep project(':ogc3dtiles')
+            shadowDep project(':draco')
         }
 
         // Fabric deps (ONLY ONCE)
