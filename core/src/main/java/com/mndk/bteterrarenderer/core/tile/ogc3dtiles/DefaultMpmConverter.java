@@ -124,10 +124,12 @@ class DefaultMpmConverter extends AbstractMpmConverter {
         if (data == null) return defaultValue;
 
         if (data instanceof AccessorByteData) {
-            return ((AccessorByteData) data).get(defaultValue);
+            AccessorByteData byteData = (AccessorByteData) data;
+            return byteData.getInt(defaultValue);
         }
         else if (data instanceof AccessorShortData) {
-            return ((AccessorShortData) data).get(defaultValue);
+            AccessorShortData shortData = (AccessorShortData) data;
+            return shortData.getInt(defaultValue);
         }
         else if (data instanceof AccessorIntData) {
             return ((AccessorIntData) data).get(defaultValue);
