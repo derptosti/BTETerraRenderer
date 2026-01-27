@@ -129,6 +129,8 @@ subprojects { p ->
         // Mod projects depend on core
         if (subprojectType.isMod) {
             shadowDep project(':core')
+            shadowDep project(':ogc3dtiles')
+            shadowDep project(':draco')
             shadowDep project(':terraplusplus')
             shadowDep project(':ogc3dtiles')
             shadowDep project(':draco')
