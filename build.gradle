@@ -515,3 +515,20 @@ class ReplacePropertyContentTransformer implements Transformer {
         this.pathMap.clear()
     }
 }
+
+subprojects { sub ->
+    sub.afterEvaluate {
+        if (sub.plugins.hasPlugin('fabric-loom')) {
+            sub.loom {
+                mods {
+                    bteterrarenderer {
+                        sourceSet rootProject.project(':core').sourceSets.main
+                        sourceSet rootProject.project(':terraplusplus').sourceSets.main
+                        sourceSet rootProject.project(':ogc3dtiles').sourceSets.main
+                        sourceSet rootProject.project(':draco').sourceSets.main
+                    }
+                }
+            }
+        }
+    }
+}
