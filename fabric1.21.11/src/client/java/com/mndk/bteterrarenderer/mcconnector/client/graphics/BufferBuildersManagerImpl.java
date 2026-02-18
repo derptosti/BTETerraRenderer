@@ -12,7 +12,6 @@ import net.minecraft.client.gl.RenderPipelines;
 import net.minecraft.client.render.*;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.util.Identifier;
-import net.minecraft.util.TriState;
 import net.minecraft.util.Util;
 import org.joml.Vector2f;
 
@@ -23,21 +22,19 @@ public class BufferBuildersManagerImpl implements BufferBuildersManager {
     /**
      * Minecraft 1.21.11 switched RenderLayer creation to the RenderSetup API.
      */
-    private static RenderSetup generateSetup(RenderPipeline pipeline, Identifier texture, boolean translucent) {
-        RenderSetup.Builder builder = RenderSetup.builder(pipeline)
+    private static RenderSetup generateSetup(RenderPipeline pipeline, Identifier texture) {
+        return RenderSetup.builder(pipeline)
                 // Sampler name must match what the pipeline declares via withSampler(...)
                 .texture("Sampler0", texture)
                 .useLightmap()
                 .useOverlay()
+                .translucent()
                 .expectedBufferSize(1536)
-                .outlineMode(RenderSetup.OutlineMode.AFFECTS_OUTLINE);
-        if (translucent) {
-            builder.translucent();
-        }
-        return builder.build();
+                .outlineMode(RenderSetup.OutlineMode.AFFECTS_OUTLINE)
+                .build();
     }
 
-    private static final BiFunction<VertexFormat.DrawMode, Boolean, RenderPipeline> TRANSLUCENT_PIPELINE = Util.memoize(
+    private static final BiFunction<VertexFormat.DrawMode, Boolean, RenderPipeline> PIPELINE = Util.memoize(
             (drawMode, cull) -> RenderPipelines.register(RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
                     .withLocation("pipeline/entity_translucent")
                     .withSampler("Sampler1")
@@ -48,48 +45,24 @@ public class BufferBuildersManagerImpl implements BufferBuildersManager {
             )
     );
 
-    private static final BiFunction<VertexFormat.DrawMode, Boolean, RenderPipeline> OPAQUE_PIPELINE = Util.memoize(
-            (drawMode, cull) -> RenderPipelines.register(RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
-                    .withLocation("pipeline/entity_opaque")
-                    .withSampler("Sampler1")
-                    .withVertexFormat(VertexFormats.POSITION_COLOR_TEXTURE_OVERLAY_LIGHT_NORMAL, drawMode)
-                    .withCull(cull)
-                    .build()
-            )
-    );
-
-    private static final BiFunction<Identifier, Boolean, RenderLayer> QUADS_TRANSLUCENT = Util.memoize(
+    private static final BiFunction<Identifier, Boolean, RenderLayer> QUADS = Util.memoize(
             (texture, cull) -> {
-                RenderPipeline pipeline = TRANSLUCENT_PIPELINE.apply(VertexFormat.DrawMode.QUADS, cull);
-                return RenderLayer.of("bteterrarenderer-quads-translucent", generateSetup(pipeline, texture, true));
+                RenderPipeline pipeline = PIPELINE.apply(VertexFormat.DrawMode.QUADS, cull);
+                return RenderLayer.of("bteterrarenderer-quads", generateSetup(pipeline, texture));
             }
     );
 
-    private static final BiFunction<Identifier, Boolean, RenderLayer> TRIS_TRANSLUCENT = Util.memoize(
+    private static final BiFunction<Identifier, Boolean, RenderLayer> TRIS = Util.memoize(
             (texture, cull) -> {
-                RenderPipeline pipeline = TRANSLUCENT_PIPELINE.apply(VertexFormat.DrawMode.TRIANGLES, cull);
-                return RenderLayer.of("bteterrarenderer-tris-translucent", generateSetup(pipeline, texture, true));
-            }
-    );
-
-    private static final BiFunction<Identifier, Boolean, RenderLayer> QUADS_OPAQUE = Util.memoize(
-            (texture, cull) -> {
-                RenderPipeline pipeline = OPAQUE_PIPELINE.apply(VertexFormat.DrawMode.QUADS, cull);
-                return RenderLayer.of("bteterrarenderer-quads-opaque", generateSetup(pipeline, texture, false));
-            }
-    );
-
-    private static final BiFunction<Identifier, Boolean, RenderLayer> TRIS_OPAQUE = Util.memoize(
-            (texture, cull) -> {
-                RenderPipeline pipeline = OPAQUE_PIPELINE.apply(VertexFormat.DrawMode.TRIANGLES, cull);
-                return RenderLayer.of("bteterrarenderer-tris-opaque", generateSetup(pipeline, texture, false));
+                RenderPipeline pipeline = PIPELINE.apply(VertexFormat.DrawMode.TRIANGLES, cull);
+                return RenderLayer.of("bteterrarenderer-tris", generateSetup(pipeline, texture));
             }
     );
 
     @Override
     public BufferBuilderWrapper<GraphicsQuad<PosTex>> begin3dQuad(NativeTextureWrapper texture, float alpha, boolean cull) {
         Identifier id = ((NativeTextureWrapperImpl) texture).delegate;
-        RenderLayer renderLayer = QUADS_OPAQUE.apply(id, cull);
+        RenderLayer renderLayer = QUADS.apply(id, cull);
 
         // DrawMode.QUADS
         // VertexFormats.POSITION_COLOR_TEXTURE_OVERLAY_LIGHT_NORMAL
@@ -111,7 +84,7 @@ public class BufferBuildersManagerImpl implements BufferBuildersManager {
     public BufferBuilderWrapper<GraphicsTriangle<PosTexNorm>> begin3dTri(NativeTextureWrapper texture,
                                                                          float alpha, boolean enableNormal, boolean cull) {
         Identifier id = ((NativeTextureWrapperImpl) texture).delegate;
-        RenderLayer renderLayer = TRIS_OPAQUE.apply(id, cull);
+        RenderLayer renderLayer = TRIS.apply(id, cull);
 
         // DrawMode.QUADS
         // VertexFormats.POSITION_COLOR_TEXTURE_OVERLAY_LIGHT_NORMAL
