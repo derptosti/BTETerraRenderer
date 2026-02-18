@@ -45,6 +45,13 @@ public class AbstractGuiScreenImpl extends Screen {
     }
 
     /**
+     * 1.21.6: renderBackground() is no longer in render()
+     */
+    @Override
+    public void renderBackground(DrawContext context, int mouseX, int mouseY, float deltaTicks) {
+    }
+
+    /**
      * 1.21.x: ParentElement#mouseClicked now takes (Click, boolean)
      */
     @Override

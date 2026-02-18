@@ -13,17 +13,26 @@ import com.mndk.bteterrarenderer.mcconnector.client.text.StyleWrapper;
 import com.mndk.bteterrarenderer.mcconnector.client.text.StyleWrapperImpl;
 import com.mndk.bteterrarenderer.mcconnector.util.ResourceLocationWrapper;
 import com.mndk.bteterrarenderer.mcconnector.util.ResourceLocationWrapperImpl;
+import com.mojang.blaze3d.pipeline.RenderPipeline;
 import lombok.RequiredArgsConstructor;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gl.RenderPipelines;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.ScreenRect;
+import net.minecraft.client.gui.render.state.SimpleGuiElementRenderState;
 import net.minecraft.client.gui.screen.ButtonTextures;
+import net.minecraft.client.render.VertexConsumer;
+import net.minecraft.client.texture.TextureSetup;
 import net.minecraft.text.Style;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.ColorHelper;
+import net.minecraft.util.math.MathHelper;
+import org.joml.Matrix3x2f;
+import org.joml.Matrix3x2fc;
 
 import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 
 @RequiredArgsConstructor
 public class GuiDrawContextWrapperImpl extends AbstractGuiDrawContextWrapper {
@@ -84,21 +93,45 @@ public class GuiDrawContextWrapperImpl extends AbstractGuiDrawContextWrapper {
         }
     }
 
-    public void fillQuad(GraphicsQuad<PosXY> quad, int color, float z) {
-        // Avoid raw VertexConsumer access (changed in 1.21.x).
-        // Approximate as an axis-aligned rectangle using bounds.
-        float[] bounds = {
-                Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY,
-                Float.NEGATIVE_INFINITY, Float.NEGATIVE_INFINITY
-        };
-        quad.forEach(v -> {
-            bounds[0] = Math.min(bounds[0], v.x);
-            bounds[1] = Math.min(bounds[1], v.y);
-            bounds[2] = Math.max(bounds[2], v.x);
-            bounds[3] = Math.max(bounds[3], v.y);
-        });
+    // Vertex system changed in 1.21.6
+    public record QuadRenderState(
+            RenderPipeline pipeline,
+            TextureSetup textureSetup,
+            Matrix3x2fc pose,
+            GraphicsQuad<PosXY> quad,
+            int color,
+            @Nullable ScreenRect scissorArea,
+            @Nullable ScreenRect bounds
+    ) implements SimpleGuiElementRenderState {
+        public QuadRenderState(
+                RenderPipeline pipeline, TextureSetup textureSetup, Matrix3x2fc pose, GraphicsQuad<PosXY> quad,
+                int color, @Nullable ScreenRect scissorArea
+        ) {
+            this(pipeline, textureSetup, pose, quad, color, scissorArea, createBounds(quad, pose, scissorArea));
+        }
 
-        delegate.fill((int) bounds[0], (int) bounds[1], (int) bounds[2], (int) bounds[3], color);
+        // Depth removed in 1.21.9
+        public void setupVertices(VertexConsumer vertices/*, float depth*/) {
+            vertices.vertex(pose(), quad.v0.x, quad.v0.y/*, depth*/).color(color);
+            vertices.vertex(pose(), quad.v1.x, quad.v1.y/*, depth*/).color(color);
+            vertices.vertex(pose(), quad.v2.x, quad.v2.y/*, depth*/).color(color);
+            vertices.vertex(pose(), quad.v3.x, quad.v3.y/*, depth*/).color(color);
+        }
+
+        private static ScreenRect createBounds(GraphicsQuad<PosXY> quad, Matrix3x2fc pose, @Nullable ScreenRect scissorArea) {
+            int l = MathHelper.floor(Math.min(Math.min(quad.v0.x, quad.v1.x), Math.min(quad.v2.x, quad.v3.x)));
+            int t = MathHelper.floor(Math.min(Math.min(quad.v0.y, quad.v1.y), Math.min(quad.v2.y, quad.v3.y)));
+            int r = MathHelper.ceil(Math.max(Math.max(quad.v0.x, quad.v1.x), Math.max(quad.v2.x, quad.v3.x)));
+            int b = MathHelper.ceil(Math.max(Math.max(quad.v0.y, quad.v1.y), Math.max(quad.v2.y, quad.v3.y)));
+            ScreenRect screenRect = new ScreenRect(l, t, r - l, b - t).transformEachVertex(pose);
+            return scissorArea != null ? scissorArea.intersection(screenRect) : screenRect;
+        }
+    }
+
+    public void fillQuad(GraphicsQuad<PosXY> quad, int color, float z) {
+        delegate.state.addSimpleElement(new QuadRenderState(
+                RenderPipelines.GUI, TextureSetup.empty(), new Matrix3x2f(delegate.getMatrices()), quad, color,
+                delegate.scissorStack.peekLast()));
     }
 
     public void drawButton(int x, int y, int width, int height, AbstractWidgetCopy.HoverState hoverState) {
@@ -125,13 +158,13 @@ public class GuiDrawContextWrapperImpl extends AbstractGuiDrawContextWrapper {
                           float u1, float u2, float v1, float v2) {
         Identifier texture = ((ResourceLocationWrapperImpl) res).delegate();
 
-        delegate.drawTexturedQuad(texture, x, x + w, y, y + h, u1, u2, v1, v2);
+        delegate.drawTexturedQuad(texture, x, y, x + w, y + h, u1, u2, v1, v2);
     }
 
     public void drawWholeNativeImage(@Nonnull NativeTextureWrapper allocatedTextureObject, int x, int y, int w, int h) {
         Identifier texture = ((NativeTextureWrapperImpl) allocatedTextureObject).delegate;
 
-        delegate.drawTexturedQuad(texture, x, x + w, y, y + h, 0, 1, 0, 1);
+        delegate.drawTexturedQuad(texture, x, y, x + w, y + h, 0, 1, 0, 1);
     }
 
     public void drawHoverEvent(StyleWrapper styleWrapper, int x, int y) {
