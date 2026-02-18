@@ -1,533 +1,567 @@
 import com.github.jengelman.gradle.plugins.shadow.transformers.Transformer
 import com.github.jengelman.gradle.plugins.shadow.transformers.TransformerContext
+import net.fabricmc.loom.api.LoomGradleExtensionAPI
+import net.minecraftforge.gradle.userdev.UserDevExtension
+import net.minecraftforge.gradle.userdev.tasks.RenameJarInPlace
 import org.apache.tools.zip.ZipEntry
 import org.apache.tools.zip.ZipOutputStream
 import org.codehaus.plexus.util.IOUtil
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.OutputStreamWriter
 
 buildscript {
     repositories {
-        maven {
-            name = 'Forge'
-            url = 'https://maven.minecraftforge.net/'
+        maven("https://maven.minecraftforge.net/") {
+            name = "Forge"
         }
-        maven {
-            name = 'Sponge Mixin'
-            url = 'https://repo.spongepowered.org/maven'
+        maven("https://repo.spongepowered.org/maven") {
+            name = "Sponge Mixin"
         }
-        //maven { url 'https://jitpack.io' }
+        //maven("https://jitpack.io")
         mavenCentral()
         gradlePluginPortal()
     }
     dependencies {
-        classpath ('net.minecraftforge.gradle:ForgeGradle:6.0.+') { changing = true }
-        classpath 'com.github.johnrengelman:shadow:8.1.1'
-        classpath 'org.spongepowered:mixingradle:0.7-SNAPSHOT'
+        classpath("net.minecraftforge.gradle:ForgeGradle:6.0.+") { isChanging = true }
+        classpath("com.github.johnrengelman:shadow:8.1.1")
+        classpath("org.spongepowered:mixingradle:0.7-SNAPSHOT")
     }
 }
 
 plugins {
-    id 'fabric-loom' version "${fabricLoomVersion}" apply false
+    id("net.fabricmc.fabric-loom-remap") apply false
+    id("net.fabricmc.fabric-loom") apply false
 }
 
-enum SubprojectType {
+enum class SubprojectType(val isMod: Boolean) {
     CORE(false), FORGE(true), FABRIC(true), LIBRARY(false)
-
-    public final boolean isMod
-    private SubprojectType(boolean isMod) { this.isMod = isMod }
 }
 
-subprojects { p ->
+subprojects {
 
-    def subprojectType = {
-        if      (project.modLoaderName == 'core')            SubprojectType.CORE
-        else if (project.modLoaderName.startsWith('forge'))  SubprojectType.FORGE
-        else if (project.modLoaderName.startsWith('fabric')) SubprojectType.FABRIC
-        else                                                 SubprojectType.LIBRARY
+    val modLoaderName = project.property("modLoaderName").toString()
+    val subprojectType = {
+        if      (modLoaderName == "core")            SubprojectType.CORE
+        else if (modLoaderName.startsWith("forge"))  SubprojectType.FORGE
+        else if (modLoaderName.startsWith("fabric")) SubprojectType.FABRIC
+        else                                         SubprojectType.LIBRARY
     }()
 
     // Match version
-    def mcVersionMatcher = project.hasProperty('minecraftVersion')
-            ? project.minecraftVersion =~ /^(\d+)\.(.+)$/
-            : null
-    def mcVersion = mcVersionMatcher != null && mcVersionMatcher.find()
-            ? Double.parseDouble(mcVersionMatcher.group(2))
-            : null
+    val mcVersionMatcher = project.findProperty("minecraftVersion")?.toString()?.let { Regex("""^(\d+)\.(.+)$""").find(it) }
+    val mcVersion = mcVersionMatcher?.groupValues?.get(2)?.toDoubleOrNull()
+    val isUnobfuscated = false // sc.current.parsed.matches(">=26.1-alpha")
 
-    apply plugin: 'java'
+    apply(plugin = "java")
     if (subprojectType == SubprojectType.CORE || subprojectType == SubprojectType.LIBRARY) {
-        apply plugin: 'maven-publish'
+        apply(plugin = "maven-publish")
     }
     else if (subprojectType == SubprojectType.FORGE) {
-        apply plugin: 'net.minecraftforge.gradle'
-        apply plugin: 'org.spongepowered.mixin'
-        apply plugin: 'com.github.johnrengelman.shadow'
+        apply(plugin = "net.minecraftforge.gradle")
+        apply(plugin = "org.spongepowered.mixin")
+        apply(plugin = "com.github.johnrengelman.shadow")
     }
     else if (subprojectType == SubprojectType.FABRIC) {
-        apply plugin: 'fabric-loom'
-    }
-
-    def (javaVersionInteger, javaVersionEnum) = {
-        if      (mcVersion >= 20.5) [ 21, JavaVersion.VERSION_21  ]
-        else if (mcVersion >= 18  ) [ 17, JavaVersion.VERSION_17  ]
-        else                        [  8, JavaVersion.VERSION_1_8 ]
-    }()
-    println("Java version set to $javaVersionEnum for $p")
-
-    if (javaVersionInteger != 8) {
-        tasks.withType(JavaCompile).configureEach {
-            it.options.release.set(javaVersionInteger)
+        if (isUnobfuscated) {
+            apply(plugin = "net.fabricmc.fabric-loom")
+        }
+        else {
+            apply(plugin = "net.fabricmc.fabric-loom-remap")
         }
     }
 
-    java {
-        if (subprojectType == SubprojectType.FABRIC) withSourcesJar()
-        toolchain.languageVersion.set(JavaLanguageVersion.of(javaVersionInteger))
-        sourceCompatibility = targetCompatibility = javaVersionEnum
+    val (javaVersionInteger, javaVersionEnum) = {
+        if      (mcVersion == null || mcVersion >= 20.5) 21 to JavaVersion.VERSION_21
+        else if (mcVersion >= 18  ) 17 to JavaVersion.VERSION_17
+        else                         8 to JavaVersion.VERSION_1_8
+    }()
+    println("Java version set to $javaVersionEnum for $project")
+
+    if (javaVersionInteger != 8) {
+        tasks.withType<JavaCompile>().configureEach {
+            options.release = javaVersionInteger
+        }
     }
 
+    extensions.configure<JavaPluginExtension> {
+        if (subprojectType == SubprojectType.FABRIC) {
+            withSourcesJar()
+        }
+        toolchain.languageVersion = JavaLanguageVersion.of(javaVersionInteger)
+        sourceCompatibility = javaVersionEnum
+        targetCompatibility = javaVersionEnum
+    }
+
+    val mainSourceSet = extensions.getByType<JavaPluginExtension>().sourceSets["main"]
+
     if (subprojectType == SubprojectType.FABRIC) {
-        loom {
+        configure<LoomGradleExtensionAPI> {
             splitEnvironmentSourceSets()
 
             mods {
-                bteterrarenderer {
-                    sourceSet sourceSets.main
-                    sourceSet sourceSets.client
+                create("bteterrarenderer") {
+                    sourceSet(mainSourceSet)
+                    sourceSet("client")
                 }
             }
 
-            def accessWidener = file("src/main/resources/${project.mod_id}.accesswidener")
-            if (accessWidener.exists()) accessWidenerPath = accessWidener
+            val accessWidener = file("src/main/resources/${project.property("mod_id")}.accesswidener")
+            if (accessWidener.exists()) {
+                accessWidenerPath = accessWidener
+            }
         }
 
-        jar { }
+        tasks.named<Jar>("jar") { }
     }
 
     configurations {
-        shadowDep
-        compileAndTestOnly
+        val shadowDep by creating
+        val compileAndTestOnly by creating
 
-        implementation.extendsFrom shadowDep
-        compileOnly.extendsFrom compileAndTestOnly
-        testImplementation.extendsFrom compileAndTestOnly
-        if (subprojectType == SubprojectType.FABRIC) include.extendsFrom shadowDep
+        named("implementation") { extendsFrom(shadowDep) }
+        named("compileOnly") { extendsFrom(compileAndTestOnly) }
+        named("testImplementation") { extendsFrom(compileAndTestOnly) }
+        if (subprojectType == SubprojectType.FABRIC) {
+            named("include") { extendsFrom(shadowDep) }
+        }
     }
 
     dependencies {
         // Fix javax.annotation.Nonnull + friends
-        compileOnly 'com.google.code.findbugs:jsr305:3.0.2'
-        testCompileOnly 'com.google.code.findbugs:jsr305:3.0.2'
+        "compileOnly"("com.google.code.findbugs:jsr305:3.0.2")
+        "testCompileOnly"("com.google.code.findbugs:jsr305:3.0.2")
 
-        if (project.modLoaderName != 'common') shadowDep project(':common')
-        if (project.modLoaderName != 'common' && project.modLoaderName != 'mcconnector') {
-            shadowDep project(':mcconnector')
+        if (modLoaderName != "common") "shadowDep"(project(":common"))
+        if (modLoaderName != "common" && modLoaderName != "mcconnector") {
+            "shadowDep"(project(":mcconnector"))
         }
-        if (project.modLoaderName == 'ogc3dtiles') {
-            shadowDep project(':draco')
+        if (modLoaderName == "ogc3dtiles") {
+            "shadowDep"(project(":draco"))
         }
 
         // Mod projects depend on core
         if (subprojectType.isMod) {
-            shadowDep project(':core')
-            shadowDep project(':ogc3dtiles')
-            shadowDep project(':draco')
-            shadowDep project(':terraplusplus')
-            shadowDep project(':ogc3dtiles')
-            shadowDep project(':draco')
+            "shadowDep"(project(":core"))
+            "shadowDep"(project(":ogc3dtiles"))
+            "shadowDep"(project(":draco"))
+            "shadowDep"(project(":terraplusplus"))
+            "shadowDep"(project(":ogc3dtiles"))
+            "shadowDep"(project(":draco"))
         }
 
         // Fabric deps (ONLY ONCE)
         if (subprojectType == SubprojectType.FABRIC) {
-            minecraft "com.mojang:minecraft:${project.minecraftVersion}"
-            mappings "net.fabricmc:yarn:${project.yarnMappings}:v2"
-            modImplementation "net.fabricmc:fabric-loader:${rootProject.fabricLoaderVersion}"
+            "minecraft"("com.mojang:minecraft:${project.findProperty("minecraftVersion")}")
+            "mappings"("net.fabricmc:yarn:${project.property("yarnMappings")}:v2")
+
+            val myModImplementation = if (isUnobfuscated) "implementation" else "modImplementation"
+
+            myModImplementation("net.fabricmc:fabric-loader:${rootProject.property("fabricLoaderVersion")}")
 
             // Fabric API (bundle)
-            modImplementation       "net.fabricmc.fabric-api:fabric-api:${project.fabricVersion}"
+            myModImplementation      ("net.fabricmc.fabric-api:fabric-api:${project.property("fabricVersion")}")
             // With splitEnvironmentSourceSets(), also add it to the client source set
-            modClientImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabricVersion}"
+            "modClientImplementation"("net.fabricmc.fabric-api:fabric-api:${project.property("fabricVersion")}")
         }
         else if (subprojectType == SubprojectType.FORGE) {
-            minecraft "net.minecraftforge:forge:${project.minecraftVersion}-${project.forgeVersion}"
+            "minecraft"("net.minecraftforge:forge:${project.findProperty("minecraftVersion")}-${project.property("forgeVersion")}")
         }
 
         // Shadow deps
-        shadowDep(group: 'com.fasterxml.jackson.core', name: 'jackson-annotations', version: '2.14.2')
-        shadowDep(group: 'com.fasterxml.jackson.core', name: 'jackson-core'       , version: '2.14.2')
-        shadowDep(group: 'com.fasterxml.jackson.core', name: 'jackson-databind'   , version: '2.14.2')
-        shadowDep(group: 'com.fasterxml.jackson.dataformat', name: 'jackson-dataformat-yaml', version: '2.14.2')
-        shadowDep(group: 'de.javagl', name: 'jgltf-impl-v2', version: '2.0.3')
-        shadowDep(group: 'de.javagl', name: 'jgltf-model'  , version: '2.0.3')
-        shadowDep(group: 'net.daporkchop.lib', name: 'common', version: '0.5.7-SNAPSHOT') { exclude group: 'io.netty' }
-        shadowDep(group: 'net.daporkchop.lib', name: 'binary', version: '0.5.7-SNAPSHOT') { exclude group: 'io.netty' }
-        shadowDep(group: 'net.daporkchop.lib', name: 'unsafe', version: '0.5.7-SNAPSHOT')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-anim'      , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-awt-util'  , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-bridge'    , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-codec'     , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-constants' , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-css'       , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-dom'       , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-ext'       , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-gvt'       , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-i18n'      , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-parser'    , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-script'    , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-svg-dom'   , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-transcoder', version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-util'      , version: '1.17')
-        shadowDep(group: 'org.apache.xmlgraphics', name: 'batik-xml'       , version: '1.17')
-        shadowDep(group: 'xml-apis', name: 'xml-apis-ext', version: '1.3.04')
-        shadowDep(group: 'org.osgeo', name: 'proj4j', version: '0.1.0')
-        shadowDep(group: 'org.yaml', name: 'snakeyaml', version: '1.33')
+        "shadowDep"("com.fasterxml.jackson.core:jackson-annotations:2.14.2")
+        "shadowDep"("com.fasterxml.jackson.core:jackson-core:2.14.2")
+        "shadowDep"("com.fasterxml.jackson.core:jackson-databind:2.14.2")
+        "shadowDep"("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.14.2")
+        "shadowDep"("de.javagl:jgltf-impl-v2:2.0.3")
+        "shadowDep"("de.javagl:jgltf-model:2.0.3")
+        "shadowDep"("net.daporkchop.lib:common:0.5.7-SNAPSHOT") { exclude(group = "io.netty") }
+        "shadowDep"("net.daporkchop.lib:binary:0.5.7-SNAPSHOT") { exclude(group = "io.netty") }
+        "shadowDep"("net.daporkchop.lib:unsafe:0.5.7-SNAPSHOT")
+        "shadowDep"("org.apache.xmlgraphics:batik-anim:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-awt-util:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-bridge:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-codec:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-constants:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-css:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-dom:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-ext:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-gvt:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-i18n:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-parser:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-script:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-svg-dom:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-transcoder:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-util:1.17")
+        "shadowDep"("org.apache.xmlgraphics:batik-xml:1.17")
+        "shadowDep"("xml-apis:xml-apis-ext:1.3.04")
+        "shadowDep"("org.osgeo:proj4j:0.1.0")
+        "shadowDep"("org.yaml:snakeyaml:1.33")
 
-        if (mcVersion > 12) { // for T++
-            shadowDep(group: 'lzma', name: 'lzma', version: '0.0.1')
+        if (mcVersion != null && mcVersion > 12) { // for T++
+            "shadowDep"("lzma:lzma:0.0.1")
         }
-        if (mcVersion < 19) {
-            shadowDep(group: 'org.joml', name: 'joml', version: '1.10.8') {
-                exclude group: 'org.jetbrains', module: 'annotations'
+        if (mcVersion != null && mcVersion < 19) {
+            "shadowDep"("org.joml:joml:1.10.8") {
+                exclude(group = "org.jetbrains", module = "annotations")
             }
         }
-        if (mcVersion >= 19) {
-            shadowDep(group: 'io.netty', name: 'netty-codec-http' , version: '4.1.9.Final')
-            shadowDep(group: 'io.netty', name: 'netty-codec-http2', version: '4.1.9.Final')
-            shadowDep(group: 'org.apache.xmlgraphics', name: 'xmlgraphics-commons', version: '2.9')
-            shadowDep(group: 'org.w3c.css', name: 'sac', version: '1.3')
+        if (mcVersion != null && mcVersion >= 19) {
+            "shadowDep"("io.netty:netty-codec-http:4.1.9.Final")
+            "shadowDep"("io.netty:netty-codec-http2:4.1.9.Final")
+            "shadowDep"("org.apache.xmlgraphics:xmlgraphics-commons:2.9")
+            "shadowDep"("org.w3c.css:sac:1.3")
         }
 
         // Compile/test-only deps
-        compileAndTestOnly 'org.apache.logging.log4j:log4j-core:2.20.0'
-        compileAndTestOnly 'org.apache.commons:commons-lang3:3.12.0'
-        compileAndTestOnly 'commons-codec:commons-codec:1.16.0'
-        compileAndTestOnly 'com.google.guava:guava:31.1-jre'
-        compileAndTestOnly 'io.netty:netty-all:4.1.9.Final'
-        compileAndTestOnly 'lzma:lzma:0.0.1'
+        "compileAndTestOnly"("org.apache.logging.log4j:log4j-core:2.20.0")
+        "compileAndTestOnly"("org.apache.commons:commons-lang3:3.12.0")
+        "compileAndTestOnly"("commons-codec:commons-codec:1.16.0")
+        "compileAndTestOnly"("com.google.guava:guava:31.1-jre")
+        "compileAndTestOnly"("io.netty:netty-all:4.1.9.Final")
+        "compileAndTestOnly"("lzma:lzma:0.0.1")
         if (!subprojectType.isMod) {
-            compileAndTestOnly 'org.joml:joml:1.10.8'
+            "compileAndTestOnly"("org.joml:joml:1.10.8")
         }
 
         // Lombok
-        compileOnly 'org.projectlombok:lombok:1.18.32'
-        testCompileOnly 'org.projectlombok:lombok:1.18.32'
-        annotationProcessor 'org.projectlombok:lombok:1.18.32'
+        "compileOnly"("org.projectlombok:lombok:1.18.32")
+        "testCompileOnly"("org.projectlombok:lombok:1.18.32")
+        "annotationProcessor"("org.projectlombok:lombok:1.18.32")
 
         if (subprojectType == SubprojectType.FORGE) {
-            annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
-            testImplementation 'org.spongepowered:lwts:1.0.0'
-            testImplementation 'org.spongepowered:mixin:0.8.5'
-            testAnnotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+            "annotationProcessor"("org.spongepowered:mixin:0.8.5:processor")
+            "testImplementation"("org.spongepowered:lwts:1.0.0")
+            "testImplementation"("org.spongepowered:mixin:0.8.5")
+            "testAnnotationProcessor"("org.spongepowered:mixin:0.8.5:processor")
         }
 
         // Tests
-        testImplementation 'junit:junit:4.13.2'
-        testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.2'
-        testImplementation 'org.apache.logging.log4j:log4j-core:2.20.0'
-        testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.2'
-        testRuntimeOnly 'junit:junit:4.13.2'
+        "testImplementation"("junit:junit:4.13.2")
+        "testImplementation"("org.junit.jupiter:junit-jupiter-api:5.8.2")
+        "testImplementation"("org.apache.logging.log4j:log4j-core:2.20.0")
+        "testRuntimeOnly"("org.junit.jupiter:junit-jupiter-engine:5.8.2")
+        "testRuntimeOnly"("junit:junit:4.13.2")
     }
 
     // Forge-only shading/relocation
     if (subprojectType == SubprojectType.FORGE) {
 
-        minecraft {
-            mappings channel: "${project.mappingsChannel}", version: "${project.mappingsVersion}"
+        configure<UserDevExtension> {
+            mappings(project.property("mappingsChannel").toString(), project.property("mappingsVersion").toString())
 
-            def accessTransformerPath = file("src/main/resources/META-INF/accesstransformer.cfg")
-            if (accessTransformerPath.exists()) accessTransformer = accessTransformerPath
+            val accessTransformerPath = file("src/main/resources/META-INF/accesstransformer.cfg")
+            if (accessTransformerPath.exists()) {
+                accessTransformer(accessTransformerPath)
+            }
 
             runs {
-                client {
-                    workingDirectory project.file('run')
-                    property 'forge.logging.markers', 'REGISTRIES'
-                    property 'forge.logging.console.level', 'debug'
-                    mods { bteterrarenderer { source sourceSets.main } }
+                create("client") {
+                    workingDirectory(project.file("run"))
+                    property("forge.logging.markers", "REGISTRIES")
+                    property("forge.logging.console.level", "debug")
+                    mods { create("bteterrarenderer") { source(mainSourceSet) } }
                 }
 
-                server {
-                    workingDirectory project.file('run')
-                    property 'forge.logging.markers', 'REGISTRIES'
-                    property 'forge.logging.console.level', 'debug'
-                    mods { bteterrarenderer { source sourceSets.main } }
+                create("server") {
+                    workingDirectory(project.file("run"))
+                    property("forge.logging.markers", "REGISTRIES")
+                    property("forge.logging.console.level", "debug")
+                    mods { create("bteterrarenderer") { source(mainSourceSet) } }
                 }
 
-                gameTestServer {
-                    workingDirectory project.file('run')
-                    property 'forge.logging.markers', 'REGISTRIES'
-                    property 'forge.logging.console.level', 'debug'
-                    mods { bteterrarenderer { source sourceSets.main } }
+                create("gameTestServer") {
+                    workingDirectory(project.file("run"))
+                    property("forge.logging.markers", "REGISTRIES")
+                    property("forge.logging.console.level", "debug")
+                    mods { create("bteterrarenderer") { source(mainSourceSet) } }
                 }
 
-                data {
-                    workingDirectory project.file('run')
-                    property 'forge.logging.markers', 'REGISTRIES'
-                    property 'forge.logging.console.level', 'debug'
-                    args '--mod', 'bteterrarenderer', '--all',
-                            '--output', file('src/generated/resources/'),
-                            '--existing', file('src/main/resources/')
-                    mods { bteterrarenderer { source sourceSets.main } }
+                create("data") {
+                    workingDirectory(project.file("run"))
+                    property("forge.logging.markers", "REGISTRIES")
+                    property("forge.logging.console.level", "debug")
+                    args("--mod", "bteterrarenderer", "--all",
+                            "--output", file("src/generated/resources/"),
+                            "--existing", file("src/main/resources/"))
+                    mods { create("bteterrarenderer") { source(mainSourceSet) } }
                 }
             }
         }
 
-        shadowJar {
-            configurations = [ project.configurations.shadowDep ]
+        tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
+            configurations = listOf(project.configurations["shadowDep"])
 
-            def dependenciesLocation = "${project.mod_group}.${project.mod_id}.dep"
-            def dependencyReplacements = [
-                    'com.fasterxml.jackson':        'jackson',
-                    'de.javagl.jgltf':              'jgltf',
-                    'net.daporkchop.lib':           'porklib',
-                    'org.apache.commons.io':        'apache.commons.io',
-                    'org.apache.commons.logging':   'apache.commons.logging',
-                    'org.apache.xmlgraphics':       'xmlgraphics',
-                    'org.apache.batik':             'batik',
-                    'org.apache.xmlcommons':        'xmlcommons',
-                    'org.joml':                     'joml',
-                    'org.osgeo.proj4j':             'proj4j',
-                    'org.w3c.css.sac':              'w3ccss.sac',
-                    'org.w3c.dom.smil':             'w3cdom.smil',
-                    'org.w3c.dom.svg':              'w3cdom.svg',
-                    'org.yaml.snakeyaml':           'snakeyaml'
-            ].collectEntries { k, v -> [ k, "$dependenciesLocation.$v" ] } as Map<String, String>
+            val dependenciesLocation = "${project.property("mod_group")}.${project.property("mod_id")}.dep"
+            val dependencyReplacements = mapOf(
+                    "com.fasterxml.jackson" to      "jackson",
+                    "de.javagl.jgltf" to            "jgltf",
+                    "net.daporkchop.lib" to         "porklib",
+                    "org.apache.commons.io" to      "apache.commons.io",
+                    "org.apache.commons.logging" to "apache.commons.logging",
+                    "org.apache.xmlgraphics" to     "xmlgraphics",
+                    "org.apache.batik" to           "batik",
+                    "org.apache.xmlcommons" to      "xmlcommons",
+                    "org.joml" to                   "joml",
+                    "org.osgeo.proj4j" to           "proj4j",
+                    "org.w3c.css.sac" to            "w3ccss.sac",
+                    "org.w3c.dom.smil" to           "w3cdom.smil",
+                    "org.w3c.dom.svg" to            "w3cdom.svg",
+                    "org.yaml.snakeyaml" to         "snakeyaml"
+            ).mapValues { (_, v) -> "$dependenciesLocation.$v" }
 
-            dependencyReplacements.each { relocate it.key, it.value }
-            transform(ReplacePropertyContentTransformer) {
+            dependencyReplacements.forEach { (k, v) -> relocate(k, v) }
+            transform(ReplacePropertyContentTransformer::class.java) {
                 replacements = dependencyReplacements
             }
 
-            archiveClassifier.set(null)
-            exclude '**/module-info.class'
-            exclude 'license/**/*'
-            exclude 'about_files/**/*'
-            exclude 'about.html'
-            exclude 'plugin.properties'
-            exclude 'kotlin/**/*'
-            exclude 'javax/xml/**/*'
-            exclude 'org/w3c/dom/bootstrap/**/*'
-            exclude 'org/w3c/dom/css/**/*'
-            exclude 'org/w3c/dom/events/**/*'
-            exclude 'org/w3c/dom/html/**/*'
-            exclude 'org/w3c/dom/ls/**/*'
-            exclude 'org/w3c/dom/ranges/**/*'
-            exclude 'org/w3c/dom/stylesheets/**/*'
-            exclude 'org/w3c/dom/traversal/**/*'
-            exclude 'org/w3c/dom/views/**/*'
-            exclude 'org/w3c/dom/xpath/**/*'
-            exclude 'org/w3c/dom/*'
-            exclude 'org/xml/sax/**/*'
+            archiveClassifier = null
+            exclude("**/module-info.class")
+            exclude("license/**/*")
+            exclude("about_files/**/*")
+            exclude("about.html")
+            exclude("plugin.properties")
+            exclude("kotlin/**/*")
+            exclude("javax/xml/**/*")
+            exclude("org/w3c/dom/bootstrap/**/*")
+            exclude("org/w3c/dom/css/**/*")
+            exclude("org/w3c/dom/events/**/*")
+            exclude("org/w3c/dom/html/**/*")
+            exclude("org/w3c/dom/ls/**/*")
+            exclude("org/w3c/dom/ranges/**/*")
+            exclude("org/w3c/dom/stylesheets/**/*")
+            exclude("org/w3c/dom/traversal/**/*")
+            exclude("org/w3c/dom/views/**/*")
+            exclude("org/w3c/dom/xpath/**/*")
+            exclude("org/w3c/dom/*")
+            exclude("org/xml/sax/**/*")
         }
 
-        reobf { shadowJar {} }
-        tasks.named('shadowJar').configure { dependsOn('reobfJar') }
-        tasks.named('build').configure { dependsOn('shadowJar') }
+        extensions.configure<NamedDomainObjectContainer<RenameJarInPlace>>("reobfJar") { create("shadowJar") }
+        tasks.named("shadowJar").configure { dependsOn("reobfJar") }
+        tasks.named("build").configure { dependsOn("shadowJar") }
 
-        sourceSets.main.resources { srcDir 'src/generated/resources' }
+        mainSourceSet.resources { srcDir("src/generated/resources") }
 
-        mixin {
-            add sourceSets.main, 'mixins.bteterrarenderer.refmap.json'
-            config 'mixins.bteterrarenderer.json'
+        extensions.configure<org.spongepowered.asm.gradle.plugins.MixinExtension>("mixin") {
+            add(mainSourceSet, "mixins.bteterrarenderer.refmap.json")
+            config("mixins.bteterrarenderer.json")
         }
 
-        jar {
+        tasks.named<org.gradle.jvm.tasks.Jar>("jar") {
             manifest.attributes(
-                    "MixinConfigs": 'mixins.bteterrarenderer.json',
-                    "FMLAT": 'accesstransformer.cfg',
-                    "ForceLoadAsMod": 'true',
-                    "TweakClass": 'org.spongepowered.asm.launch.MixinTweaker',
-                    "TweakOrder": 0,
-                    "Manifest-Version": 1.0
+                    "MixinConfigs" to "mixins.bteterrarenderer.json",
+                    "FMLAT" to "accesstransformer.cfg",
+                    "ForceLoadAsMod" to "true",
+                    "TweakClass" to "org.spongepowered.asm.launch.MixinTweaker",
+                    "TweakOrder" to 0,
+                    "Manifest-Version" to 1.0
             )
         }
     }
 
-    processResources {
+    tasks.withType<ProcessResources>() {
         duplicatesStrategy = DuplicatesStrategy.INCLUDE
 
-        def target = layout.buildDirectory.dir('resources/main').get().asFile
+        val target = layout.buildDirectory.dir("resources/main").get().asFile
 
-        def resourceTargets = [
-                'mcmod.info',
-                'META-INF/mods.toml',
-                'fabric.mod.json'
-        ]
-        def replaceProperties = [
-                version:                rootProject.mod_version,
-                mcversion:              project.hasProperty('minecraftVersion') ? project.minecraftVersion : '',
-                authors:                rootProject.mod_authors,
-                displayName:            rootProject.mod_displayName,
-                description:            rootProject.mod_description,
-                url:                    rootProject.mod_url,
-                sourceUrl:              rootProject.mod_sourceUrl,
-                discordUrl:             rootProject.mod_discordUrl,
-                credits:                rootProject.mod_credits,
-                license:                rootProject.mod_license,
-                fabricLoaderVersion:    rootProject.fabricLoaderVersion
-        ]
+        val resourceTargets = listOf(
+                "mcmod.info",
+                "META-INF/mods.toml",
+                "fabric.mod.json"
+        )
+        val replaceProperties = mapOf(
+                "version" to             rootProject.property("mod_version"),
+                "mcversion" to           (project.findProperty("minecraftVersion") ?: ""),
+                "authors" to             rootProject.property("mod_authors"),
+                "displayName" to         rootProject.property("mod_displayName"),
+                "description" to         rootProject.property("mod_description"),
+                "url" to                 rootProject.property("mod_url"),
+                "sourceUrl" to           rootProject.property("mod_sourceUrl"),
+                "discordUrl" to          rootProject.property("mod_discordUrl"),
+                "credits" to             rootProject.property("mod_credits"),
+                "license" to             rootProject.property("mod_license"),
+                "fabricLoaderVersion" to rootProject.property("fabricLoaderVersion")
+        )
 
-        inputs.properties replaceProperties
+        inputs.properties(replaceProperties)
 
-        filesMatching(resourceTargets) { expand replaceProperties }
+        filesMatching(resourceTargets) { expand(replaceProperties) }
 
         copy {
-            from(sourceSets.main.resources) {
-                include resourceTargets
-                expand replaceProperties
+            from(mainSourceSet.resources) {
+                include(resourceTargets)
+                expand(replaceProperties)
             }
-            into target
+            into(target)
         }
 
         doLast {
             if (subprojectType == SubprojectType.CORE) {
-                fileTree(dir: outputs.files.asPath, include: '**/*.lang').each { File langFile ->
-                    String content = langFile.getText('UTF-8').split('\n')
-                            .collect { it.replaceFirst(/#.*/, '') }
-                            .collect { it =~ /([^=]+)=(.+)/ }
-                            .findAll { it.find() }
-                            .collect { [ it.group(1), it.group(2) ] }
-                            .collect { "    \"${it[0]}\": \"${it[1].replaceAll('\"', '\\\\\"')}\"" }
-                            .join(",\n")
+                fileTree(outputs.files.asPath) { include("**/*.lang") }.forEach { langFile: File ->
+                    val r1 = Regex("#.*")
+                    val r2 = Regex("""([^=]+)=(.+)""")
+                    val content = langFile.readText(Charsets.UTF_8).split("\n")
+                        .asSequence()
+                        .map { it.replace(r1, "") }
+                        .mapNotNull { r2.find(it) }
+                        .map { it.groupValues[1] to it.groupValues[2] }
+                        .map { (k, v) ->
+                            """    "$k": "${v.replace("\"", "\\\\\"")}""""
+                        }
+                        .joinToString(",\n")
 
-                    File jsonFile = file(langFile.path.replaceFirst(~/\.[^.]+$/, '') + '.json')
-                    jsonFile.setText("{\n$content\n}", 'UTF-8')
+                    val r3 = Regex("""\.[^.]+$""")
+                    val jsonPath = langFile.path.replaceFirst(r3, "") + ".json"
+                    val jsonFile = file(jsonPath)
+
+                    jsonFile.writeText("{\n$content\n}", Charsets.UTF_8)
                 }
             }
             else if (subprojectType.isMod) {
-                File logoFile = new File(project(':core').projectDir, 'src/main/resources/icon.png')
-                byte[] logoContent = logoFile.readBytes()
+                val logoFile = File(project(":core").projectDir, "src/main/resources/icon.png")
+                val logoContent = logoFile.readBytes()
 
-                File targetLogoFile = new File(outputs.files.asPath, 'icon.png')
-                targetLogoFile.setBytes(logoContent)
+                val targetLogoFile = File(outputs.files.asPath, "icon.png")
+                targetLogoFile.writeBytes(logoContent)
             }
         }
     }
 
     if (subprojectType.isMod) {
-        project.tasks.register('copyBuildResultToRoot', Copy) {
-            group = 'build'
-            description = 'Copies build result into root build directory'
-            from "${project.projectDir}/build/libs"
-            into "${rootProject.projectDir}/build/libs"
-            dependsOn('build')
+        project.tasks.register<Copy>("copyBuildResultToRoot") {
+            group = "build"
+            description = "Copies build result into root build directory"
+            from("${project.projectDir}/build/libs")
+            into("${rootProject.projectDir}/build/libs")
+            dependsOn("build")
         }
-        tasks.named('build').configure { finalizedBy('copyBuildResultToRoot') }
+        tasks.named("build").configure { finalizedBy("copyBuildResultToRoot") }
 
-        project.tasks.register('cleanModProjects', Delete) {
-            group = 'build'
-            description = 'Cleans mod projects'
-            dependsOn('clean')
+        project.tasks.register<Delete>("cleanModProjects") {
+            group = "build"
+            description = "Cleans mod projects"
+            dependsOn("clean")
         }
     }
     else {
-        tasks.named('test').configure { dependsOn(rootProject.tasks.gitSubmoduleUpdate) }
-        project.tasks.register('buildNonModProjects') {
-            group = 'build'
-            description = 'Builds non-mod projects.\nThis is because fabric requires dependency jars to be present before building.'
-            dependsOn('build')
+        tasks.named("test").configure { dependsOn(rootProject.tasks.named("gitSubmoduleUpdate")) }
+        project.tasks.register("buildNonModProjects") {
+            group = "build"
+            description = "Builds non-mod projects.\nThis is because fabric requires dependency jars to be present before building."
+            dependsOn("build")
         }
+    }
+
+    tasks.withType<Jar>().configureEach {
+        duplicatesStrategy = DuplicatesStrategy.INCLUDE
     }
 }
 
-allprojects { p ->
-    apply plugin: 'java'
-    apply plugin: 'maven-publish'
+allprojects {
+    apply(plugin = "java")
+    apply(plugin = "maven-publish")
 
-    version = "${rootProject.mod_version}-${project.name}"
-    group = rootProject.mod_group
+    version = "${rootProject.property("mod_version")}-${project.name}"
+    group = rootProject.property("mod_group").toString()
 
-    base {
-        archivesName = rootProject.mod_id
+    extensions.configure<BasePluginExtension> {
+        archivesName = rootProject.property("mod_id").toString()
     }
 
-    compileJava.options.encoding = 'UTF-8'
+    tasks.named<JavaCompile>("compileJava") {
+        options.encoding = "UTF-8"
+    }
 
     repositories {
         mavenCentral()
-        maven { url "https://repo.spongepowered.org/maven/" }
-        maven { url "https://maven.daporkchop.net/" }
-        maven { url "https://repo.opencollab.dev/snapshot/" }
-        maven { url "https://jitpack.io/" }
-        maven { url "https://repo.elytradev.com/" }
+        maven("https://repo.spongepowered.org/maven/")
+        maven("https://maven.daporkchop.net/")
+        maven("https://repo.opencollab.dev/snapshot/")
+        maven("https://jitpack.io/")
+        maven("https://repo.elytradev.com/")
     }
 }
 
-publishing {
+extensions.configure<PublishingExtension> {
     publications {
         //noinspection GroovyAssignabilityCheck
-        maven(MavenPublication) {
-            groupId = 'com.mndk'
-            artifactId = 'bteterrarenderer-core'
-            version = rootProject.mod_version
-            from project(':core').components.java
+        create<MavenPublication>("mavenJava") {
+            groupId = "com.mndk"
+            artifactId = "bteterrarenderer-core"
+            version = rootProject.property("mod_version").toString()
+            from(project(":core").components["java"])
         }
     }
 }
 
-tasks.register('gitSubmoduleUpdate', Exec) {
-    group = 'other'
-    description = 'Updates submodules'
+tasks.register<Exec>("gitSubmoduleUpdate") {
+    group = "other"
+    description = "Updates submodules"
 
-    commandLine 'git', 'submodule', 'update', '--init'
+    commandLine("git", "submodule", "update", "--init")
 
-    def stdout = new ByteArrayOutputStream()
+    val stdout = ByteArrayOutputStream()
     standardOutput = stdout
     doLast {
-        println('Submodule update command output: ')
+        println("Submodule update command output: ")
         if (stdout.size() > 0) println(stdout.toString())
-        else println('(none)')
+        else println("(none)")
     }
 }
 
-class ReplacePropertyContentTransformer implements Transformer {
+class ReplacePropertyContentTransformer : Transformer {
 
     @Input
-    Map<String, String> replacements
+    lateinit var replacements: Map<String, String>
 
-    private final Map<String, String> pathMap = new HashMap<>()
+    val pathMap = hashMapOf<String, String>()
 
-    boolean canTransformResource(FileTreeElement fileTreeElement) {
-        return fileTreeElement.relativePath.pathString.endsWith('.properties')
+    override fun canTransformResource(fileTreeElement: FileTreeElement): Boolean {
+        return fileTreeElement.relativePath.pathString.endsWith(".properties")
     }
 
-    void transform(TransformerContext context) {
-        def buffer = new ByteArrayOutputStream()
-        IOUtil.copy(context.is, buffer)
-        context.is.close()
-        def content = buffer.toString('UTF-8')
+    override fun transform(context: TransformerContext) {
+        val buffer = ByteArrayOutputStream()
+        IOUtil.copy(context.`is`, buffer)
+        context.`is`.close()
+        var content = buffer.toString("UTF-8")
 
-        this.replacements.each { k, v ->
-            if (!content.contains(k)) return
-            content = content.replaceAll(k, v)
+        this.replacements.forEach { (k, v) ->
+            if (k !in content) return
+            content = content.replace(k, v)
         }
         this.pathMap[context.path] = content
     }
 
-    boolean hasTransformedResource() { !this.pathMap.isEmpty() }
+    override fun hasTransformedResource(): Boolean = !this.pathMap.isEmpty()
 
-    void modifyOutputStream(ZipOutputStream os, boolean b) {
-        def zipWriter = new OutputStreamWriter(os, 'UTF-8')
-        this.pathMap.each { path, content ->
-            def entry = new ZipEntry(path)
+    override fun modifyOutputStream(os: ZipOutputStream, b: Boolean) {
+        val zipWriter = OutputStreamWriter(os, "UTF-8")
+        this.pathMap.forEach { (path, content) ->
+            val entry = ZipEntry(path)
             entry.time = TransformerContext.getEntryTimestamp(b, entry.time)
             os.putNextEntry(entry)
-            IOUtil.copy(new ByteArrayInputStream(content.getBytes('UTF-8')), zipWriter)
+            IOUtil.copy(ByteArrayInputStream(content.toByteArray(Charsets.UTF_8)), zipWriter)
             zipWriter.flush()
             os.closeEntry()
         }
         this.pathMap.clear()
     }
+
+    override fun getName(): String = "ReplacePropertyContentTransformer"
 }
 
-subprojects { sub ->
-    sub.afterEvaluate {
-        if (sub.plugins.hasPlugin('fabric-loom')) {
-            sub.loom {
+subprojects {
+    afterEvaluate {
+        if (plugins.hasPlugin("fabric-loom")) {
+            configure<LoomGradleExtensionAPI> {
                 mods {
-                    bteterrarenderer {
-                        sourceSet rootProject.project(':core').sourceSets.main
-                        sourceSet rootProject.project(':terraplusplus').sourceSets.main
-                        sourceSet rootProject.project(':ogc3dtiles').sourceSets.main
-                        sourceSet rootProject.project(':draco').sourceSets.main
+                    named("bteterrarenderer") {
+                        sourceSet(rootProject.project(":core").extensions.getByType<JavaPluginExtension>().sourceSets["main"])
+                        sourceSet(rootProject.project(":terraplusplus").extensions.getByType<JavaPluginExtension>().sourceSets["main"])
+                        sourceSet(rootProject.project(":ogc3dtiles").extensions.getByType<JavaPluginExtension>().sourceSets["main"])
+                        sourceSet(rootProject.project(":draco").extensions.getByType<JavaPluginExtension>().sourceSets["main"])
                     }
                 }
             }

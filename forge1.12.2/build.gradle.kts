@@ -1,5 +1,5 @@
 dependencies {
     // There is a bug in the 1.12.2 forge plugin that cannot import the mixin dependency
     // So we instead manually add the dependency here
-    compileOnly fg.deobf('org.spongepowered:mixin:0.8.3')
+    compileOnly(fg.deobf("org.spongepowered:mixin:0.8.3"))
 }
