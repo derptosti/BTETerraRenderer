@@ -1,0 +1,39 @@
+pluginManagement {
+    repositories {
+        maven("https://maven.fabricmc.net/") {
+            name = "Fabric"
+        }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+
+    val fabricLoomVersion: String by settings
+    plugins {
+        id("net.fabricmc.fabric-loom-remap") version fabricLoomVersion
+        id("net.fabricmc.fabric-loom") version fabricLoomVersion
+    }
+}
+
+rootProject.name = "BTETerraRenderer"
+include(":common")
+include(":terraplusplus")
+include(":draco")
+include(":mcconnector")
+include(":ogc3dtiles")
+
+include(":core")
+
+// Single-version build target
+//include(":forge1.12.2")
+//include(":forge1.18.2")
+//include(":fabric1.18.2")
+//include(":fabric1.19.4")
+//include(":fabric1.20.1")
+//include(":fabric1.20.2")
+//include(":fabric1.20.4")
+//include(":fabric1.20.6")
+//include(":fabric1.21")
+//include(":fabric1.21.1")
+//include(":fabric1.21.4")
+include(":fabric1.21.5")
+include(":fabric1.21.11")
